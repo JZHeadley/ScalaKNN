@@ -8,6 +8,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
 object Main {
+
   def main(args: Array[String]) {
     val datasetPath = "/home/jzheadley/IdeaProjects/ScalaKNN/src/main/resources/small.arff"
     val log = Logger.getLogger(getClass.getName)
@@ -18,8 +19,10 @@ object Main {
         StructField("label", IntegerType)
       )
     )
+
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
+
     val startTime = System.nanoTime()
     val spark = SparkSession.builder
       .appName("Scala KNN")
