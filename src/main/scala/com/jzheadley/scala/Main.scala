@@ -17,12 +17,14 @@ object Main {
     val datasetPath = smallDatasetPath
     val log = Logger.getLogger(getClass.getName)
     log.info(datasetPath)
-    //    val schema = DataTypes.createStructType(
-    //      Array(
-    //        StructField("features", ArrayType(DoubleType)),
-    //        StructField("label", IntegerType)
-    //      )
-    //    )
+
+    val schema = DataTypes.createStructType(
+      Array(
+        StructField("label", IntegerType, nullable = false),
+        StructField("features", ArrayType(DoubleType), nullable = false),
+        StructField("id", LongType)
+      )
+    )
 
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
@@ -35,30 +37,35 @@ object Main {
     log.info("Loading dataset")
 
 
-    labelThroughSparkSQLTest(spark)
+    //    labelThroughSparkSQLTest(spark)
 
-
-    val dataDf = spark
+    val dataDfRaw = spark
       .read
       .format("org.apache.spark.ml.source.arff")
       .load(datasetPath)
-      .withColumn("id", monotonically_increasing_id)
+      .withColumn("id", monotonically_increasing_id())
       .persist(StorageLevel.MEMORY_AND_DISK)
-    dataDf.show()
-    dataDf.collect()
+
+    val dataDf = spark
+      .createDataFrame(
+        dataDfRaw.rdd.map(row => {
+          Row(row.getDouble(0).toInt, row.get(1).asInstanceOf[DenseVector].values.toSeq, row.getLong(2))
+        }), schema)
+
+    //    dataDf.show()
+    dataDf.printSchema()
     //    val dataDf = readArffIntoDataFrame(spark, datasetPath, schema).persist(StorageLevel.MEMORY_AND_DISK)
-    import spark.implicits._
-    val data = dataDf.map(row => LabeledPoint(row.getDouble(0), row.get(1).asInstanceOf[DenseVector]))
-    val Array(train, test) = data.randomSplit(Array(0.5, 0.5))
-
-
-    val predictions = runKNNOnFullDataset(spark, dataDf, 3)
+    //    val data = dataDf.map(row => LabeledPoint(row.getInt(0), Vectors.dense(row.getSeq(1).asInstanceOf[Seq[Double]].toArray)))
+    //    val Array(train, test) = data.randomSplit(Array(0.5, 0.5))
+    //
+    val k = 3
+    val predictions = runKNNOnFullDataset(spark, dataDf, k)
     val accuracy = computeAccuracy(predictions)
     val diff = (System.nanoTime() - startTime) / 1000000.0
-    val logisticRegressionAccuracy = computeAccuracy(runLogisticRegression(train, test))
+    //    val logisticRegressionAccuracy = computeAccuracy(runLogisticRegression(train, test))
 
     println(f"\nThe KNN classifier for ${dataDf.rdd.count} instances required $diff%01.4fms CPU time. Accuracy was $accuracy%01.4f\n")
-    println(f"\nThe Logistic Regression classifier trained on ${train.rdd.count} instances and tested on ${test.rdd.count} instances had  Accuracy of  $logisticRegressionAccuracy%01.4f\n")
+    //    println(f"\nThe Logistic Regression classifier trained on ${train.rdd.count} instances and tested on ${test.rdd.count} instances had  Accuracy of  $logisticRegressionAccuracy%01.4f\n")
 
     spark.sqlContext.clearCache()
     spark.stop()
@@ -71,67 +78,94 @@ object Main {
       .toDF("label", "distance")
       .sort(desc("distance")) // sort it with highest distances first
 
-    distances.show()
+    //    distances.show()
     println(vote(distances, 3))
   }
 
   import math._
 
+
   def runKNNOnFullDataset(spark: SparkSession, data: DataFrame, k: Int): DataFrame = {
-    val knnUDF = udf { id: Long =>
-      val test = data.where(s"id==$id")
-      //      val test: DataFrame = instances.filter(row => row.getLong(2) == id)
-      println(test)
-      //      test.show()
-      knn(spark, data.where(s"id!=$id"), test.first().get(1).asInstanceOf[Seq[Double]], id, k)
+    //    def runKNNOnFullDataset(spark: SparkSession, train: DataFrame, test: DataFrame, k: Int): DataFrame = {
+    val schema = DataTypes.createStructType(
+      Array(
+        StructField("id", LongType),
+        StructField("prediction", IntegerType, nullable = false)
+      )
+    )
+
+    // Create an empty dataset
+
+
+    //    emptyDF.union(predicted test instance)
+
+
+    // Test dataframe using local iterator
+
+    // For each test instance
+
+    // Broadcast
+
+    // UDF to find distances with the test instance and the train
+
+    // sort distances
+
+    // Pick k
+
+    // Voting
+
+    // Add to test instance
+
+    // Predicted Union to emptyDF
+
+    // Repeat
+
+
+    // return emptyDF
+    //    var test = data.where("id==1").first()
+    //
+    //    knn(spark, data.where("id!=1"), test.getSeq(1), 1, k)
+    val emptyDf = spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema)
+
+    import spark.implicits._
+    val it = data.toLocalIterator()
+    while (it.hasNext) {
+      var row = it.next()
+      var instanceId = row.getLong(2)
+      println(instanceId)
+      var prediction = knn(spark, data.where(s"id!=$instanceId"), row.getSeq(1), instanceId, k)
+      var newRow = Seq((instanceId, prediction))
+      //      newRow.show()
+      emptyDf.union(newRow.toDF("id", "prediction"))
     }
-
-
-    data.withColumn("prediction", knnUDF(data("id")))
-
-    //    data.foreach(test => {
-    //      val testId = test.getLong(2)
-    //      //      val train = data
-    //      //        .filter(row => {
-    //      //          println(row)
-    //      //          row.getLong(2) != testId
-    //      //        })
-    //      //        .collect()
-    //      //      println(testId)
-    //      //      println(test.get(1))
-    //      val testFeatures = test.get(1).asInstanceOf[DenseVector].values.toSeq
-    //      //      println(testFeatures)
-    //      knn(spark, data, testFeatures, testId, k)
-    //  }
-
-    //  )
+    emptyDf
+      .show()
+    val ret = data.join(emptyDf, "id")
+    ret
+    //    data.withColumn("prediction", runKNNWithInstance(spark, k, data) (col("id")))
+    //    data
   }
 
   def knn(spark: SparkSession, train: DataFrame, testFeatures: Seq[Double], testInstanceId: Long, k: Int): Int = {
     val distanceUDF = udf {
-      features: DenseVector =>
-        println(features)
-        println(testFeatures)
-        //          0
-        distance(features.values.toSeq, testFeatures)
+      features: Seq[Double] => distance(features, testFeatures)
     }
-
-    //    val distances = train.map(row => {
-    //      println(row)
-    //
-    //      (distance(testFeatures, row(1).asInstanceOf[Seq[Double]]), row(1).asInstanceOf[Int])
-    //    })
-    //    val blah = distanceUDF(train("features"))
     val distanced = train.withColumn("distance", distanceUDF(train("features")))
       // just take the labels column since its all we need now doing it here might make things faster since we're dealing with less data?
       .select(col("label"), col("distance"))
       .sort(desc("distance")) // sort it with highest distances first
-
-
-    distanced.show()
+    //    distanced.show()
     vote(distanced, k)
   }
 
+  /**
+    * Knn Voting algorithm with tie breaking created almost exclusively with Spark SQL...
+    * Really hope Spark SQL is in some way optimized and is part of the magic...
+    *
+    * @param distanced dataframe with a distance and a label column presorted in descending order by distance
+    * @param k         the current k closest we're looking for
+    * @return the most common class amongst the k closest
+    */
   def vote(distanced: DataFrame, k: Int): Int = {
     // because spark does magic this hopefully isn't incredibly slow... probably is anyway
     // is that groupby with an aggregate n^2 ? feel like it might be... good thing k isn't generally very large
