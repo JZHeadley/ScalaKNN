@@ -1,3 +1,8 @@
 target/
 .idea/
 *.class
+*.py
+*.csv
+.attach_pid*
+out/
+spark-warehouse/
