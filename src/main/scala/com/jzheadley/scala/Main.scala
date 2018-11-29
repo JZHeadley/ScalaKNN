@@ -129,19 +129,32 @@ object Main {
     //    })
     //    val blah = distanceUDF(train("features"))
     val distanced = train.withColumn("distance", distanceUDF(train("features")))
+      // just take the labels column since its all we need now doing it here might make things faster since we're dealing with less data?
+      .select(col("label"), col("distance"))
+      .sort(desc("distance")) // sort it with highest distances first
 
 
     distanced.show()
+    vote(distanced, k)
+  }
+
+  def vote(distanced: DataFrame, k: Int): Int = {
     // because spark does magic this hopefully isn't incredibly slow... probably is anyway
     // is that groupby with an aggregate n^2 ? feel like it might be... good thing k isn't generally very large
-    distanced.sort(desc("distance")) // sort it with highest distances first
+    val labelCounts = distanced
       .limit(k) // take the k closest
-      .select(col("label")) // just take the labels column since its all we need now
       .groupBy("label") // groupby the label
       .agg(count("label").as("labelCounts")) //count how many instances of each label we have
-      .first() // take the first row which should have the highest occurrence
-      .getInt(0) // get the label from the row so we can return it as the prediction
-    //    0
+    // if we don't have k distinct values there is a tie in voting and we should reduce k and revote
+    if (labelCounts.select("labelCounts").distinct().count() == k) {
+      vote(distanced, k - 1) //yay functional programming!
+    }
+    else {
+      labelCounts
+        .first() // take the first row which should have the highest occurrence
+        .getInt(0) // get the label from the row so we can return it as the prediction
+
+    }
   }
 
   def distance(features1: Seq[Double], features2: Seq[Double]): Double = {
