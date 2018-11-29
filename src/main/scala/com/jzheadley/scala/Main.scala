@@ -65,20 +65,14 @@ object Main {
 
   }
 
-  def labelThroughSparkSQLTest(spark: SparkSession) = {
+  def labelThroughSparkSQLTest(spark: SparkSession): Unit = {
     import spark.implicits._
-    val distances = Seq(1, 1, 0, 1, 2, 6, 7, 7, 6).toDF("label")
-    distances.show()
-    val countLabels = distances
-      .groupBy("label")
-      .agg(count("label").as("labelCounts"))
-      .limit(3)
+    val distances = Seq((1, 12.0), (1, 10.0), (0, 11.0), (1, 3.45), (2, 5.2), (6, 20.6), (7, 10.0), (7, 10.0), (6, 3.0))
+      .toDF("label", "distance")
+      .sort(desc("distance")) // sort it with highest distances first
 
-    countLabels.show()
-    val prediction = countLabels
-      .first()
-      .getInt(0)
-    println(prediction)
+    distances.show()
+    println(vote(distances, 3))
   }
 
   import math._
@@ -146,7 +140,7 @@ object Main {
       .groupBy("label") // groupby the label
       .agg(count("label").as("labelCounts")) //count how many instances of each label we have
     // if we don't have k distinct values there is a tie in voting and we should reduce k and revote
-    if (labelCounts.select("labelCounts").distinct().count() == k) {
+    if (labelCounts.select("labelCounts").distinct().count() != k) {
       vote(distanced, k - 1) //yay functional programming!
     }
     else {
