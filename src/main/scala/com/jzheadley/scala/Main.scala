@@ -1,13 +1,13 @@
 package com.jzheadley.scala
 
 import org.apache.log4j.{Level, Logger}
-import org.apache.spark.ml.classification.LogisticRegression
-import org.apache.spark.ml.feature.LabeledPoint
-import org.apache.spark.ml.linalg.DenseVector
+import org.apache.spark.ml.linalg.{DenseVector, Vectors}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.storage.StorageLevel
+
+import scala.collection.mutable.ListBuffer
 
 object Main {
 
@@ -29,7 +29,6 @@ object Main {
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
 
-    val startTime = System.nanoTime()
     val spark = SparkSession.builder
       .appName("Scala KNN")
       .master("local[*]")
@@ -39,116 +38,45 @@ object Main {
 
     //    labelThroughSparkSQLTest(spark)
 
-    val dataDfRaw = spark
+    val dataDf = spark
       .read
       .format("org.apache.spark.ml.source.arff")
       .load(datasetPath)
       .withColumn("id", monotonically_increasing_id())
       .persist(StorageLevel.MEMORY_AND_DISK)
 
-    val dataDf = spark
-      .createDataFrame(
-        dataDfRaw.rdd.map(row => {
-          Row(row.getDouble(0).toInt, row.get(1).asInstanceOf[DenseVector].values.toSeq, row.getLong(2))
-        }), schema)
 
-    //    dataDf.show()
-    dataDf.printSchema()
-    //    val dataDf = readArffIntoDataFrame(spark, datasetPath, schema).persist(StorageLevel.MEMORY_AND_DISK)
-    //    val data = dataDf.map(row => LabeledPoint(row.getInt(0), Vectors.dense(row.getSeq(1).asInstanceOf[Seq[Double]].toArray)))
-    //    val Array(train, test) = data.randomSplit(Array(0.5, 0.5))
-    //
+    //    dataDf.printSchema()
     val k = 3
+    val startTime = System.nanoTime()
     val predictions = runKNNOnFullDataset(spark, dataDf, k)
+    predictions.show()
     val accuracy = computeAccuracy(predictions)
     val diff = (System.nanoTime() - startTime) / 1000000.0
-    //    val logisticRegressionAccuracy = computeAccuracy(runLogisticRegression(train, test))
 
     println(f"\nThe KNN classifier for ${dataDf.rdd.count} instances required $diff%01.4fms CPU time. Accuracy was $accuracy%01.4f\n")
-    //    println(f"\nThe Logistic Regression classifier trained on ${train.rdd.count} instances and tested on ${test.rdd.count} instances had  Accuracy of  $logisticRegressionAccuracy%01.4f\n")
 
     spark.sqlContext.clearCache()
     spark.stop()
-
   }
-
-  def labelThroughSparkSQLTest(spark: SparkSession): Unit = {
-    import spark.implicits._
-    val distances = Seq((1, 12.0), (1, 10.0), (0, 11.0), (1, 3.45), (2, 5.2), (6, 20.6), (7, 10.0), (7, 10.0), (6, 3.0))
-      .toDF("label", "distance")
-      .sort(desc("distance")) // sort it with highest distances first
-
-    //    distances.show()
-    println(vote(distances, 3))
-  }
-
-  import math._
-
 
   def runKNNOnFullDataset(spark: SparkSession, data: DataFrame, k: Int): DataFrame = {
-    //    def runKNNOnFullDataset(spark: SparkSession, train: DataFrame, test: DataFrame, k: Int): DataFrame = {
-    val schema = DataTypes.createStructType(
-      Array(
-        StructField("id", LongType),
-        StructField("prediction", IntegerType, nullable = false)
-      )
-    )
-
-    // Create an empty dataset
-
-
-    //    emptyDF.union(predicted test instance)
-
-
-    // Test dataframe using local iterator
-
-    // For each test instance
-
-    // Broadcast
-
-    // UDF to find distances with the test instance and the train
-
-    // sort distances
-
-    // Pick k
-
-    // Voting
-
-    // Add to test instance
-
-    // Predicted Union to emptyDF
-
-    // Repeat
-
-
-    // return emptyDF
-    //    var test = data.where("id==1").first()
-    //
-    //    knn(spark, data.where("id!=1"), test.getSeq(1), 1, k)
-    val emptyDf = spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema)
-
+    val predictions = ListBuffer[(Long, Double)]()
     import spark.implicits._
     val it = data.toLocalIterator()
     while (it.hasNext) {
-      var row = it.next()
-      var instanceId = row.getLong(2)
+      val row = it.next()
+      val instanceId = row.getLong(2)
       println(instanceId)
-      var prediction = knn(spark, data.where(s"id!=$instanceId"), row.getSeq(1), instanceId, k)
-      var newRow = Seq((instanceId, prediction))
-      //      newRow.show()
-      emptyDf.union(newRow.toDF("id", "prediction"))
+      val prediction = knn(spark, data.where(s"id!=$instanceId"), row.get(1).asInstanceOf[DenseVector], instanceId, k)
+      predictions.append((instanceId, prediction))
     }
-    emptyDf
-      .show()
-    val ret = data.join(emptyDf, "id")
-    ret
-    //    data.withColumn("prediction", runKNNWithInstance(spark, k, data) (col("id")))
-    //    data
+    data.join(predictions.seq.toDF("id", "prediction"), "id")
   }
 
-  def knn(spark: SparkSession, train: DataFrame, testFeatures: Seq[Double], testInstanceId: Long, k: Int): Int = {
+  def knn(spark: SparkSession, train: DataFrame, testFeatures: DenseVector, testInstanceId: Long, k: Int): Double = {
     val distanceUDF = udf {
-      features: Seq[Double] => distance(features, testFeatures)
+      features: DenseVector => Vectors.sqdist(testFeatures, features)
     }
     val distanced = train.withColumn("distance", distanceUDF(train("features")))
       // just take the labels column since its all we need now doing it here might make things faster since we're dealing with less data?
@@ -166,7 +94,7 @@ object Main {
     * @param k         the current k closest we're looking for
     * @return the most common class amongst the k closest
     */
-  def vote(distanced: DataFrame, k: Int): Int = {
+  def vote(distanced: DataFrame, k: Int): Double = {
     // because spark does magic this hopefully isn't incredibly slow... probably is anyway
     // is that groupby with an aggregate n^2 ? feel like it might be... good thing k isn't generally very large
     val labelCounts = distanced
@@ -180,17 +108,8 @@ object Main {
     else {
       labelCounts
         .first() // take the first row which should have the highest occurrence
-        .getInt(0) // get the label from the row so we can return it as the prediction
-
+        .getDouble(0) // get the label from the row so we can return it as the prediction
     }
-  }
-
-  def distance(features1: Seq[Double], features2: Seq[Double]): Double = {
-    sqrt(
-      (features1 zip features2).map {
-        case (x, y) => pow(y - x, 2)
-      }.sum
-    )
   }
 
   /*
@@ -202,14 +121,6 @@ object Main {
   def computeAccuracy(predictions: DataFrame): Double = {
     val correctPredictions = predictions.where("prediction == label")
     correctPredictions.rdd.count.toFloat / predictions.rdd.count.toFloat
-  }
-
-  def runLogisticRegression(train: Dataset[LabeledPoint], test: Dataset[LabeledPoint]): DataFrame = {
-    val lr = new LogisticRegression()
-      .setMaxIter(10)
-      .setRegParam(0.01)
-    val model = lr.fit(train)
-    model.transform(test)
   }
 
   /*
