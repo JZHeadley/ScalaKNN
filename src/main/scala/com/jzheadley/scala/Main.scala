@@ -2,20 +2,64 @@ package com.jzheadley.scala
 
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.ml.linalg.{DenseVector, Vectors}
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.storage.StorageLevel
 
 import scala.collection.mutable.ListBuffer
 
 object Main {
 
-  def main(args: Array[String]) {
-    val smallDatasetPath = "/home/jzheadley/IdeaProjects/ScalaKNN/src/main/resources/small.arff"
-    val mediumDatasetPath = "/home/jzheadley/IdeaProjects/ScalaKNN/src/main/resources/medium.arff"
-    var datasetPath = smallDatasetPath
-    //        datasetPath = mediumDatasetPath
+  def displayMetrics(predictionAndLabels: RDD[(Double, Double)]): Unit = {
+    val metrics = new MulticlassMetrics(predictionAndLabels)
 
+    // Confusion matrix
+    println("Confusion matrix:")
+    println(metrics.confusionMatrix)
+
+    // Overall Statistics
+    val accuracy = metrics.accuracy
+    println("Summary Statistics")
+    println(s"Accuracy = $accuracy")
+
+    // Precision by label
+    val labels = metrics.labels
+    labels.foreach { l =>
+      println(s"Precision($l) = " + metrics.precision(l))
+    }
+
+    // Recall by label
+    labels.foreach { l =>
+      println(s"Recall($l) = " + metrics.recall(l))
+    }
+
+    // False positive rate by label
+    labels.foreach { l =>
+      println(s"FPR($l) = " + metrics.falsePositiveRate(l))
+    }
+
+    // F-measure by label
+    labels.foreach { l =>
+      println(s"F1-Score($l) = " + metrics.fMeasure(l))
+    }
+
+    // Weighted stats
+    println(s"Weighted precision: ${metrics.weightedPrecision}")
+    println(s"Weighted recall: ${metrics.weightedRecall}")
+    println(s"Weighted F1 score: ${metrics.weightedFMeasure}")
+    println(s"Weighted false positive rate: ${metrics.weightedFalsePositiveRate}")
+
+  }
+
+  def main(args: Array[String]) {
+
+    val smallDatasetPath = "/home/jzheadley/IdeaProjects/ScalaKNN/src/main/resources/small.arff"
+    //    val mediumDatasetPath = "/home/jzheadley/IdeaProjects/ScalaKNN/src/main/resources/medium.arff"
+    var datasetPath = smallDatasetPath
+    //            datasetPath = mediumDatasetPath
     val log = Logger.getLogger(getClass.getName)
     log.info(datasetPath)
 
@@ -29,21 +73,24 @@ object Main {
     log.info("Loading dataset")
     //    labelThroughSparkSQLTest(spark)
 
+
+    // If I use Jorge's library I can't seem to get the label correctly and only read it in as a 0
+    // As a result I always predict 0 which gives me 100% accuracy so thats fun...
     //    val dataDf = spark
     //      .read
     //      .format("org.apache.spark.ml.source.arff")
     //      .load(datasetPath)
     //      .withColumn("id", monotonically_increasing_id())
-    //      .persist(StorageLevel.MEMORY_AND_DISK)
     val dataDf: DataFrame = readArffIntoDataFrame(spark, datasetPath)
-    dataDf.show(300)
-    dataDf.printSchema()
+      .persist(StorageLevel.MEMORY_AND_DISK)
+    //    dataDf.show(400)
+    //    dataDf.printSchema()
     val k = 3
     val startTime = System.nanoTime()
     val predictions = runKNNOnFullDataset(spark, dataDf, k)
-    predictions.show(400)
-    val accuracy = computeAccuracy(predictions)
     val diff = (System.nanoTime() - startTime) / 1000000.0
+    val accuracy = computeAccuracy(predictions)
+    //    displayMetrics(predictions.rdd.map(row => (row.getInt(1).toDouble, row.getInt(3).toDouble)))
 
     // should get 79.17% on small dataset and 60.62% on medium
     println(f"\nThe KNN classifier for ${dataDf.rdd.count} instances required $diff%01.4fms CPU time. Accuracy was $accuracy%01.2f%%\n")
@@ -59,12 +106,10 @@ object Main {
     while (it.hasNext) {
       val row = it.next()
       val instanceId = row.getLong(2)
-      println(instanceId)
+      //      println(instanceId)
       val prediction = knn(spark, data.where(s"id!=$instanceId"), row.get(1).asInstanceOf[DenseVector], instanceId, k)
       predictions.append((instanceId, prediction))
     }
-    data.show(400)
-    predictions.toDF().show(400)
     data.join(predictions.seq.toDF("id", "prediction"), "id")
   }
 
@@ -113,8 +158,6 @@ object Main {
    */
   def computeAccuracy(predictions: DataFrame): Double = {
     val correctPredictions = predictions.where("prediction == label")
-    println(s"have ${correctPredictions.count()} correctPredictions")
-    println(s"have ${predictions.count()} total Predictions")
     (correctPredictions.rdd.count.toFloat / predictions.rdd.count.toFloat) * 100.0
   }
 
